@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.so
+*.pt
+*.egg-info/
+.pytest_cache/
+runs/
+outputs/
+data/pandaset_g3r/
+.DS_Store

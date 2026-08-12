@@ -1,0 +1,34 @@
+# Functional/debug configuration. PointMLP is NOT the paper architecture.
+network:
+  backend: point_mlp
+  hidden: 128
+  time_dim: 16
+training:
+  scene_iterations: 2
+  steps: 2
+  warmup_scene_iterations: 0
+  lr: 0.0001
+  point_limit: 20000
+  source_views: 1
+  target_views: 1
+  view_selection: frame
+  normalize_gradients: true
+  checkpoint_every: 1
+inference:
+  steps: 2
+  steps_turbo: 1
+  point_limit: 20000
+  point_limit_turbo: 10000
+  normalize_gradients: true
+scheduler:
+  type: cosine
+  floor: 0.05
+loss:
+  lambda_lpips: 0.0
+  lambda_reg: 0.0
+  reg_epsilon: 0.01
+renderer:
+  packed: true
+  radius_clip: 0.0
+  near: 0.01
+  far: 1000.0
