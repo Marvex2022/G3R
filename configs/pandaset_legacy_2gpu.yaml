@@ -1,0 +1,64 @@
+# Legacy PandaSet run resumed on two GPUs while preserving effective scene batch=4.
+paths:
+  pandaset_root: /home/user/huazhi/neurad-studio/neurad-studio/data/pandaset
+  prepared_root: /home/user/longjun/g3r_repro_code/data/pandaset_g3r
+  scenes: /home/user/longjun/g3r_repro_code/data/pandaset_g3r/train_scenes.json
+  output: /home/user/longjun/g3r_repro_code/runs/g3r_pandaset_4gpu
+
+preprocessing:
+  dynamic_actors: true
+  actor_max_points: 50000
+  actor_min_points: 20
+  cuboid_margin: 0.05
+
+network:
+  backend: torchsparse
+  time_dim: 32
+  voxel_size: 0.20
+  sky_hidden: 96
+
+training:
+  scene_iterations: 1000
+  steps: 24
+  warmup_scene_iterations: 100
+  lr: 0.0001
+  point_limit: 600000
+  source_views: 10
+  target_views: 10
+  view_selection: frame
+  normalize_gradients: true
+  checkpoint_every: 100
+  latest_every: 1
+  seed: 0
+  # Four workers (two on each GPU) x one scene/rank = effective batch 4.
+  scenes_per_rank: 1
+  mixed_precision: true
+  amp_dtype: float16
+  amp_sky: true
+  amp_lpips: true
+
+inference:
+  steps: 24
+  steps_turbo: 12
+  point_limit: 3000000
+  point_limit_turbo: 1500000
+  normalize_gradients: true
+  seed: 0
+
+scheduler:
+  type: cosine_ddim
+  s: 0.008
+  floor: 0.0
+
+loss:
+  lambda_lpips: 0.01
+  lambda_reg: 0.01
+  lpips_net: vgg
+  reg_epsilon: 0.01
+  lpips_max_side: null
+
+renderer:
+  packed: true
+  radius_clip: 0.0
+  near: 0.01
+  far: 100000.0

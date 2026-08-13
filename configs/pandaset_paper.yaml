@@ -1,0 +1,65 @@
+# G3R PandaSet reproduction config.
+# Values explicitly reported by the paper/supplement are marked [paper].
+# Values marked [unspecified] are engineering choices because the authors did not publish them.
+paths:
+  # Local paths used by scripts/prepare_pandaset.py and train.py.
+  pandaset_root: /home/user/huazhi/neurad-studio/neurad-studio/data/pandaset
+  prepared_root: /home/user/longjun/g3r_repro_code/data/pandaset_g3r
+  scenes: /home/user/longjun/g3r_repro_code/data/pandaset_g3r/train_scenes.json
+  output: /home/user/longjun/g3r_repro_code/runs/g3r_pandaset
+
+preprocessing:
+  dynamic_actors: true
+  actor_max_points: 50000
+  actor_min_points: 20
+  cuboid_margin: 0.05
+
+network:
+  backend: torchsparse                  # [paper] SparseResUNet in TorchSparse
+  time_dim: 32                         # [unspecified] positional embedding width
+  voxel_size: 0.20                     # [unspecified] meters; tune 0.10-0.30 for your scaffold density
+  sky_hidden: 96                       # [unspecified]
+
+training:
+  scene_iterations: 1000               # [paper]
+  steps: 24                            # [paper]
+  warmup_scene_iterations: 100         # [unspecified] paper only says "first few scene iterations"
+  lr: 0.0001                           # [paper]
+  point_limit: 600000                  # memory-safe for shared 80GB GPUs; paper uses 800000
+  source_views: 10                     # [paper]
+  target_views: 10                     # [paper]
+  view_selection: frame                # [engineering] closest frames for driving sequence
+  normalize_gradients: true            # [paper]
+  checkpoint_every: 100
+  latest_every: 1                       # crash recovery; overwritten atomically every iteration
+  seed: 0
+  mixed_precision: true                 # FP16 optimizer networks; renderer/Gaussians remain FP32
+  amp_dtype: float16                    # TorchSparse 2.1 supports FP16, not BF16
+  amp_sky: true
+  amp_lpips: true
+
+inference:
+  steps: 24                            # [paper]
+  steps_turbo: 12                      # [paper]
+  point_limit: 3000000                 # [paper]
+  point_limit_turbo: 1500000           # [paper]
+  normalize_gradients: true
+  seed: 0
+
+scheduler:
+  type: cosine_ddim                    # [paper says cosine scheduler from DDIM]
+  s: 0.008                             # [unspecified implementation detail]
+  floor: 0.0
+
+loss:
+  lambda_lpips: 0.01                   # [paper]
+  lambda_reg: 0.01                     # [paper]
+  lpips_net: vgg                       # [unspecified] LPIPS backbone
+  reg_epsilon: 0.01                    # [unspecified]
+  lpips_max_side: null                 # set 512 for a lower-memory approximation
+
+renderer:
+  packed: true
+  radius_clip: 0.0
+  near: 0.01
+  far: 100000.0

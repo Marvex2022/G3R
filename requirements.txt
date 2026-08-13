@@ -1,0 +1,13 @@
+numpy>=1.24
+pandas>=2.0
+Pillow>=10.0
+PyYAML>=6.0
+tqdm>=4.66
+tensorboard>=2.16
+scipy>=1.10
+plyfile>=1.0
+lpips>=0.1.4
+gsplat>=1.4
+# Install PyTorch for your CUDA version separately.
+# TorchSparse is CUDA/PyTorch-version specific; install from upstream:
+# python -c "$(curl -fsSL https://raw.githubusercontent.com/mit-han-lab/torchsparse/master/install.py)"

@@ -1,0 +1,44 @@
+network:
+  backend: torchsparse
+  time_dim: 32
+  voxel_size: 0.10                     # [unspecified; drone mesh is denser than PandaSet]
+  sky_hidden: 96
+
+training:
+  scene_iterations: 1000
+  steps: 24
+  warmup_scene_iterations: 100
+  lr: 0.0001
+  point_limit: 1500000                 # [paper]
+  source_views: 25                     # [paper]
+  target_views: 25                     # [paper]
+  view_selection: camera_distance
+  normalize_gradients: true
+  checkpoint_every: 25
+  seed: 0
+
+inference:
+  steps: 24
+  steps_turbo: 24                      # [paper] turbo still 24 for BlendedMVS
+  point_limit: 3500000                 # [paper]
+  point_limit_turbo: 2500000           # [paper]
+  normalize_gradients: true
+  seed: 0
+
+scheduler:
+  type: cosine_ddim
+  s: 0.008
+  floor: 0.0
+
+loss:
+  lambda_lpips: 0.01
+  lambda_reg: 0.01
+  lpips_net: vgg                       # [unspecified] LPIPS backbone
+  reg_epsilon: 0.01
+  lpips_max_side: null
+
+renderer:
+  packed: true
+  radius_clip: 0.0
+  near: 0.01
+  far: 100000.0
