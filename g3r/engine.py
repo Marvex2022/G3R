@@ -293,6 +293,9 @@ def _atomic_hardlink(source: Path, destination: Path) -> None:
 _METRIC_FIELDS = [
     "iteration",
     "global_step",
+    # Retain columns written by earlier revisions so resuming an existing run
+    # does not fail while truncating rows newer than the selected checkpoint.
+    "scenes",
     "mse",
     "psnr_db",
     "lpips",
@@ -302,6 +305,7 @@ _METRIC_FIELDS = [
     "iteration_seconds",
     "grad_scale",
     "optimizer_skipped",
+    "optimizer_skipped_steps",
 ]
 
 
