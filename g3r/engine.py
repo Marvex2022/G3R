@@ -170,19 +170,19 @@ def update_scene_state(
     return SceneState(bg_next, actors_next, sky_next)
 
 
-def _supervision_step(
+def _supervision_backward(
     state_next: SceneState,
     scene: SceneTemplate,
     view_indices: list[int],
     modules: G3RModules,
     renderer: GSplatRenderer,
     lpips_loss: LPIPSLoss,
-    optimizer: torch.optim.Optimizer,
     device: str | torch.device,
     cfg: dict,
     scaler: torch.amp.GradScaler,
     amp_dtype: torch.dtype | None,
     amp_lpips: bool,
+    loss_weight: float = 1.0,
 ) -> dict[str, float]:
     if not view_indices:
         raise ValueError("No supervision views")
@@ -192,7 +192,6 @@ def _supervision_step(
     reg_eps = float(lcfg.get("reg_epsilon", 0.01))
     n = len(view_indices)
 
-    optimizer.zero_grad(set_to_none=True)
     mse_acc = 0.0
     lpips_acc = 0.0
     for j, vidx in enumerate(view_indices):
@@ -214,10 +213,19 @@ def _supervision_step(
         is_last = j == n - 1
         if is_last and lambda_reg > 0:
             loss = loss + lambda_reg * flat_gaussian_regularizer(state_next, modules.decoder, reg_eps)
-        scaler.scale(loss).backward(retain_graph=not is_last)
+        scaler.scale(loss * loss_weight).backward(retain_graph=not is_last)
         mse_acc += float(lmse.detach()) / n
         lpips_acc += float(llp.detach()) / n
 
+    return {"mse": mse_acc, "lpips": lpips_acc}
+
+
+def _optimizer_step(
+    modules: G3RModules,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+) -> dict[str, float]:
+    """Apply one synchronized update after all local scenes contributed gradients."""
     scaler.unscale_(optimizer)
     gradients_finite = _average_gradients(modules)
     optimizer_skipped = not gradients_finite
@@ -228,8 +236,6 @@ def _supervision_step(
         optimizer.zero_grad(set_to_none=True)
         scaler.update(new_scale=max(float(scaler.get_scale()) * 0.5, 1.0))
     return {
-        "mse": mse_acc,
-        "lpips": lpips_acc,
         "grad_scale": float(scaler.get_scale()),
         "optimizer_skipped": float(optimizer_skipped),
     }
@@ -367,6 +373,7 @@ def train_g3r(
     selection_mode = tcfg.get("view_selection", "frame")
     checkpoint_every = int(tcfg.get("checkpoint_every", 25))
     latest_every = int(tcfg.get("latest_every", 1))
+    scenes_per_rank = int(tcfg.get("scenes_per_rank", 1))
     mixed_precision = bool(tcfg.get("mixed_precision", False))
     amp_dtype_name = str(tcfg.get("amp_dtype", "float16")).lower()
     if amp_dtype_name not in {"float16", "fp16"}:
@@ -379,6 +386,9 @@ def train_g3r(
     scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision)
     if checkpoint_every <= 0 or latest_every <= 0:
         raise ValueError("checkpoint_every and latest_every must be positive")
+    if scenes_per_rank <= 0:
+        raise ValueError("training.scenes_per_rank must be positive")
+    scenes_per_iter = world_size * scenes_per_rank
 
     start_outer = 0
     global_step = 0
@@ -419,15 +429,23 @@ def train_g3r(
     )
     for outer in pbar:
         iteration_started = time.perf_counter()
-        # Iteration-local RNG makes sampling reproducible even after --resume.
-        rng = random.Random(seed + outer * world_size + rank)
-        scene = rng.choice(scenes)
-        state = scene.instantiate(
-            device=device,
-            point_limit=point_limit,
-            seed=seed + outer * world_size + rank,
-        )
-        src_idx, tgt_idx = select_training_views(scene, n_source, n_target, selection_mode, rng)
+        # Keep the same four per-iteration sample seeds when migrating from
+        # 4 GPUs x 1 scene/rank to 2 GPUs x 2 scenes/rank.
+        local_batches = []
+        for local_index in range(scenes_per_rank):
+            sample_index = rank * scenes_per_rank + local_index
+            sample_seed = seed + outer * scenes_per_iter + sample_index
+            rng = random.Random(sample_seed)
+            scene = rng.choice(scenes)
+            state = scene.instantiate(
+                device=device,
+                point_limit=point_limit,
+                seed=sample_seed,
+            )
+            src_idx, tgt_idx = select_training_views(
+                scene, n_source, n_target, selection_mode, rng
+            )
+            local_batches.append([scene, state, src_idx, tgt_idx])
         if warmup_outer > 0:
             frac = min(1.0, (outer + 1) / warmup_outer)
             active_steps = max(1, int(round(1 + frac * (full_steps - 1))))
@@ -436,38 +454,48 @@ def train_g3r(
 
         last_stats = {}
         for step in range(active_steps):
-            # Fresh leaf state for gradient lifting.
-            leaf = state.detach().requires_grad_(True)
-            grads = lift_source_images_to_gradients(
-                leaf, scene, src_idx, modules.decoder, renderer, device,
-                normalize=bool(tcfg.get("normalize_gradients", True)),
-            )
+            optimizer.zero_grad(set_to_none=True)
+            mse_acc = 0.0
+            lpips_acc = 0.0
             gamma = _gamma(cfg, step, full_steps)
-            state_next = update_scene_state(
-                leaf,
-                grads,
-                modules,
-                step,
-                full_steps,
-                gamma,
-                network_dtype=amp_dtype,
-                amp_sky=amp_sky,
-            )
-            last_stats = _supervision_step(
-                state_next,
-                scene,
-                src_idx + tgt_idx,
-                modules,
-                renderer,
-                lpips_loss,
-                optimizer,
-                device,
-                cfg,
-                scaler,
-                amp_dtype,
-                amp_lpips,
-            )
-            state = state_next.detach()
+            for batch in local_batches:
+                scene, state, src_idx, tgt_idx = batch
+                # Each scene is processed sequentially, so activation memory is
+                # close to the old one-scene-per-rank run. Gradients accumulate.
+                leaf = state.detach().requires_grad_(True)
+                grads = lift_source_images_to_gradients(
+                    leaf, scene, src_idx, modules.decoder, renderer, device,
+                    normalize=bool(tcfg.get("normalize_gradients", True)),
+                )
+                state_next = update_scene_state(
+                    leaf,
+                    grads,
+                    modules,
+                    step,
+                    full_steps,
+                    gamma,
+                    network_dtype=amp_dtype,
+                    amp_sky=amp_sky,
+                )
+                scene_stats = _supervision_backward(
+                    state_next,
+                    scene,
+                    src_idx + tgt_idx,
+                    modules,
+                    renderer,
+                    lpips_loss,
+                    device,
+                    cfg,
+                    scaler,
+                    amp_dtype,
+                    amp_lpips,
+                    loss_weight=1.0 / scenes_per_rank,
+                )
+                mse_acc += scene_stats["mse"] / scenes_per_rank
+                lpips_acc += scene_stats["lpips"] / scenes_per_rank
+                batch[1] = state_next.detach()
+            last_stats = {"mse": mse_acc, "lpips": lpips_acc}
+            last_stats.update(_optimizer_step(modules, optimizer, scaler))
             global_step += 1
 
         if distributed:
@@ -489,7 +517,7 @@ def train_g3r(
         iteration_seconds = time.perf_counter() - iteration_started
         if rank == 0:
             pbar.set_postfix(
-                scenes_per_iter=world_size,
+                scenes_per_iter=scenes_per_iter,
                 T=active_steps,
                 mse=f"{mse:.4f}",
                 psnr=f"{psnr:.2f}",
@@ -501,7 +529,7 @@ def train_g3r(
                 "psnr_db": psnr,
                 "lpips": lpips_value,
                 "active_steps": active_steps,
-                "scenes_per_iter": world_size,
+                "scenes_per_iter": scenes_per_iter,
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "iteration_seconds": iteration_seconds,
                 "grad_scale": float(last_stats.get("grad_scale", scaler.get_scale())),
@@ -528,6 +556,8 @@ def train_g3r(
                 "outer_iteration": completed_outer,
                 "global_step": global_step,
                 "world_size": world_size,
+                "scenes_per_rank": scenes_per_rank,
+                "effective_scene_batch": scenes_per_iter,
                 "config": cfg,
             }
             latest_path = output_dir / "latest.pt"
