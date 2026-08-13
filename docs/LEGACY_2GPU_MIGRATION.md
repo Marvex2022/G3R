@@ -1,18 +1,18 @@
 # Legacy four-scene batch on two GPUs
 
 This worktree is pinned to the pre-corrected G3R implementation (`20f26b3`).
-It resumes the original PandaSet run with two distributed workers while keeping
+It resumes the original PandaSet run with four distributed workers while keeping
 the effective scene batch at four:
 
 ```text
-old: 4 GPUs x 1 scene/rank = 4 scenes/update
-new: 2 GPUs x 2 scenes/rank = 4 scenes/update
+old: 4 GPUs x 1 process/GPU x 1 scene/rank = 4 scenes/update
+new: 2 GPUs x 2 processes/GPU x 1 scene/rank = 4 scenes/update
 ```
 
-The two local scenes are reconstructed in lockstep. At every reconstruction
-step, their losses are weighted by `1 / scenes_per_rank`, accumulated
-sequentially, and followed by one cross-rank gradient average and one optimizer
-step. Sequential processing avoids holding two render/backward graphs at once.
+Each worker reconstructs one scene. Two independent CUDA processes share each
+physical GPU, so four scenes can make progress concurrently before one global
+gradient average and optimizer update. Independent processes keep PyTorch
+autograd, TorchSparse, and gsplat state isolated; Python threads are not used.
 
 The global sample seed is based on `outer_iteration * effective_scene_batch +
 global_sample_index`, so the two-GPU run consumes the same four sample seeds per
@@ -24,8 +24,9 @@ Resume on physical GPUs 2 and 5:
 cd /home/user/longjun/g3r_repro_code_legacy_2gpu
 CUDA_VISIBLE_DEVICES=2,5 \
 G3R_DIST_BACKEND=gloo \
+G3R_PROCESSES_PER_GPU=2 \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-torchrun --standalone --nproc-per-node=2 \
+torchrun --standalone --nproc-per-node=4 \
   train.py \
   --config configs/pandaset_legacy_2gpu.yaml \
   --device cuda \

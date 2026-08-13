@@ -30,8 +30,8 @@ training:
   checkpoint_every: 100
   latest_every: 1
   seed: 0
-  # Two GPUs x four sequentially accumulated scenes = effective batch 8.
-  scenes_per_rank: 4
+  # Four workers (two on each GPU) x one scene/rank = effective batch 4.
+  scenes_per_rank: 1
   mixed_precision: true
   amp_dtype: float16
   amp_sky: true

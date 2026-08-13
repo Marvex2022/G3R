@@ -12,6 +12,28 @@ from g3r.data import load_manifest_list
 from g3r.engine import train_g3r
 
 
+def _map_rank_to_cuda_device(
+    local_rank: int,
+    world_size: int,
+    visible_device_count: int,
+    processes_per_gpu: int,
+) -> int:
+    """Map adjacent local workers onto the same visible CUDA device."""
+    if visible_device_count <= 0:
+        raise ValueError("No visible CUDA devices")
+    if processes_per_gpu <= 0:
+        raise ValueError("G3R_PROCESSES_PER_GPU must be positive")
+    expected_world_size = visible_device_count * processes_per_gpu
+    if world_size != expected_world_size:
+        raise ValueError(
+            f"WORLD_SIZE={world_size} does not match {visible_device_count} visible GPUs "
+            f"x G3R_PROCESSES_PER_GPU={processes_per_gpu} ({expected_world_size})"
+        )
+    if not 0 <= local_rank < world_size:
+        raise ValueError(f"LOCAL_RANK={local_rank} is outside WORLD_SIZE={world_size}")
+    return local_rank // processes_per_gpu
+
+
 def _initialize_gsplat_backend(distributed: bool) -> None:
     """Load gsplat serially because its JIT loader removes the shared lock file."""
     if not distributed:
@@ -43,8 +65,16 @@ def main():
         if not args.device.startswith("cuda"):
             raise ValueError("Multi-GPU training requires --device cuda")
         local_rank = int(os.environ["LOCAL_RANK"])
-        torch.cuda.set_device(local_rank)
-        device = f"cuda:{local_rank}"
+        world_size = int(os.environ["WORLD_SIZE"])
+        processes_per_gpu = int(os.environ.get("G3R_PROCESSES_PER_GPU", "1"))
+        device_index = _map_rank_to_cuda_device(
+            local_rank,
+            world_size,
+            torch.cuda.device_count(),
+            processes_per_gpu,
+        )
+        torch.cuda.set_device(device_index)
+        device = f"cuda:{device_index}"
         backend = os.environ.get("G3R_DIST_BACKEND", "nccl").lower()
         if backend == "nccl":
             dist.init_process_group(backend=backend, device_id=torch.device(device))
